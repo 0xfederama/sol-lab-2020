@@ -28,4 +28,4 @@ test2:
 #Rimuove i file compilati, il log e il file in cui viene salvato il PID del supermarket
 clean:
 	@echo "Deleting useless files"
-	rm -f supermarket sm.PID mylib.o libsm.a supermarket.log
+	-rm -f supermarket sm.PID mylib.o libsm.a supermarket.log

@@ -73,10 +73,11 @@ void deleteCoda (coda*q);
 typedef struct casse_sm {
 	int id;
 	int open;
-	coda *codaClienti;	//Non serve nessun lock per la coda perche' l'implementazione di questa coda prevede gia l'uso di lock
+	coda *codaClienti;	//Non serve nessun lock sulla coda perche' l'implementazione di questa coda prevede gia l'uso di lock
 	pthread_mutex_t servitoLock;
 	pthread_cond_t servitoCond;
 	pthread_mutex_t openLock;
+	pthread_cond_t openCond;
 } casse_sm;
 
 typedef struct clienteincoda {

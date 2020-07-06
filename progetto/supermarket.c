@@ -15,8 +15,9 @@ static volatile sig_atomic_t s_sigquit=0;
 
 static void handler (int sig) {
 
-	if (sig==SIGQUIT) s_sigquit=1; //Chiusura immediata
-	if (sig==SIGHUP) s_sighup=1; //Nessun cliente entra, finisco quelli dentro 
+	//Possibilita' di ricevere un solo segnale per evitare problemi
+	if (sig==SIGQUIT) if (s_sighup==0) s_sigquit=1; //Chiusura immediata
+	if (sig==SIGHUP) if (s_sigquit==0) s_sighup=1; //Nessun cliente entra, finisco quelli dentro 
 
 	write(1, (sig==SIGHUP) ? "Received signal SIGHUP\n" : "Received signal SIGQUIT\n", 24); 
 	fflush(stdout);
@@ -25,7 +26,6 @@ static void handler (int sig) {
 
 static config *conf; 		//Struct di configurazioni iniziali
 static casse_sm *casseCode;	//Array di casse con code di clienti	
-static coda *clienti_sm;	//Coda di clienti
 
 static int inizializzato=0; //Varibile per inizializzare l'array delle casse prima che qualche clienti provi ad accedere
 static pthread_mutex_t initLock = PTHREAD_MUTEX_INITIALIZER;
@@ -72,7 +72,7 @@ void *notify (void *arg) {
 	for (int i=0; i<conf->K; ++i) {
 		sizeCode[i]=0;
 	}
-	struct timespec sleeptime = { 0, conf->T*1000000 };
+	struct timespec sleeptime = { 0, conf->T*1000000 }; //Dorme per T secondi per aspettare che i clienti si siano messi in coda
 	nanosleep(&sleeptime, NULL);
 
 	while (s_sigquit==0) {
@@ -130,6 +130,8 @@ void *checkouts (void *arg) {
 
 	int openbefore=0;
 
+	float tclose=0; //Tempo che la cassa e' stata chiusa
+
 	while (s_sigquit==0) {
 
 		if (s_sighup==1) {
@@ -143,8 +145,7 @@ void *checkouts (void *arg) {
 		int exit=0;	//Variabile per vedere se devo uscire perche chiude il supermercato
 		int cont=0;
 		pthread_mutex_lock(&casseCode[id].openLock);
-		if (casseCode[id].open == 0) {
-			cont=1;
+		while (casseCode[id].open==0 && s_sighup==0 && s_sigquit==0) {
 			if (openbefore==1) {
 				nclose++;
 				openbefore=0;
@@ -153,7 +154,17 @@ void *checkouts (void *arg) {
 					casseCode[id].codaClienti=initCoda();
 				}
 			}
-		} else openbefore=1;
+			//Calcolo tempo1
+			struct timespec t1={0,0};
+			clock_gettime(CLOCK_REALTIME, &t1);
+			//Aspetto che venga segnalata apertura
+			pthread_cond_wait(&casseCode[id].openCond, &casseCode[id].openLock);
+			//Calcolo tempo2, trovo differenza e sommo al tempo di chiusura
+			struct timespec t2={0,0};
+			clock_gettime(CLOCK_REALTIME, &t2);
+			tclose+=(((double)t2.tv_sec + 1.0e-9*t2.tv_nsec)-((double)t1.tv_sec + 1.e-9*t1.tv_nsec));
+		}
+		openbefore=1;
 		pthread_mutex_unlock(&casseCode[id].openLock);
 		
 		if (s_sigquit==1) {
@@ -164,9 +175,6 @@ void *checkouts (void *arg) {
 			pthread_mutex_unlock(&inCustLock);
 		}
 
-		if (cont==1) {	//Continuo se la cassa e' chiusa, cosi da non aspettare infinitamente che la cassa aspetti di essere aperta mentre magari il supermercato sta chiudendo
-			continue;
-		}
 		if (exit==1) {
 			pthread_cond_broadcast(&casseCode[id].servitoCond);
 			break;
@@ -220,11 +228,12 @@ void *checkouts (void *arg) {
 	//Calcolo tempo finale
 	struct timespec closetime={0,0};
 	clock_gettime(CLOCK_REALTIME, &closetime);
-	float ttot=((double)closetime.tv_sec + 1.0e-9*closetime.tv_nsec)-((double)start.tv_sec + 1.e-9*start.tv_nsec);
+	float ttotopen=((double)closetime.tv_sec + 1.0e-9*closetime.tv_nsec)-((double)start.tv_sec + 1.e-9*start.tv_nsec)-tclose;
+	if (ttotopen<0) ttotopen=0;
 
 	//Scrivi nel logfile
 	pthread_mutex_lock(&logLock);
-	fprintf(logfile, "CHECKOUT | id:%d | # prod tot:%d | # clienti:%d | t tot aperta:%.3f s | t med serv:%.3f s | # chiusure:%d |\n", id, numprodtot, numclienti, ttot, tmedserv, nclose); fflush(logfile);
+	fprintf(logfile, "CHECKOUT | id:%d | # prod tot:%d | # clienti:%d | t tot aperta:%.3f s | t med serv:%.3f s | # chiusure:%d |\n", id, numprodtot, numclienti, ttotopen, tmedserv, nclose); fflush(logfile);
 	pthread_mutex_unlock(&logLock);
 
 	#ifdef DEBUG
@@ -265,10 +274,6 @@ void *customers (void *arg) {
 	unsigned int tAcq = rand_r(&seed) % (conf->T-10) + conf->T; //Cosi facendo, sono sicuro che 10<=tAcq<=T
 	struct timespec buytime = { 0, tAcq*1000000 };
 	nanosleep(&buytime, NULL);
-
-	pthread_mutex_lock(&totProdLock);	//Aumento il numero di prodotti comprati
-	totProd+=numprod;
-	pthread_mutex_unlock(&totProdLock);
 
 	#ifdef DEBUG
 		printf("Cliente %d compra %d oggetti\n", id, numprod);
@@ -320,6 +325,10 @@ void *customers (void *arg) {
 		pthread_exit(NULL);
 	}
 
+	pthread_mutex_lock(&totProdLock);	//Aumento il numero di prodotti comprati
+	totProd+=numprod;
+	pthread_mutex_unlock(&totProdLock);
+
 	int numcode=0; //Numero di code visitate
 	
 	//Inizia a contare il tempo che il cliente sta in coda
@@ -340,11 +349,9 @@ void *customers (void *arg) {
 			numcassa = rand_r(&seed) % conf->K;
 			pthread_mutex_lock(&casseCode[numcassa].openLock);
 			if (casseCode[numcassa].open==0) {
-
 				#ifdef DEBUG
 					printf("Cliente %d ha trovato cassa %d chiusa, ora ne cerca un'altra\n", id, numcassa);
 				#endif
-
 				pthread_mutex_unlock(&casseCode[numcassa].openLock);
 				continue;
 			}
@@ -490,6 +497,10 @@ void *supermarketManagement (void *arg) {
 			fprintf(stderr, "Error initializing lock open #%d in casseCode\n", i);
 			pthread_exit(NULL);
 		}
+		if (pthread_cond_init(&casseCode[i].openCond, NULL) != 0) {
+			fprintf(stderr, "Error initializing varcond open #%d in casseCode\n", i); 
+			pthread_exit(NULL);
+		}
 	}
 
 	//Apro le casse che dovranno essere aperte all'apertura del supermercato e lancio i rispettivi thread passandogli l'id della cassa
@@ -506,6 +517,7 @@ void *supermarketManagement (void *arg) {
 		if (i<openCheckout) {
 			pthread_mutex_lock(&casseCode[i].openLock);
 			casseCode[i].open=1;
+			pthread_cond_signal(&casseCode[i].openCond);
 			pthread_mutex_unlock(&casseCode[i].openLock);
 		}
 	}
@@ -564,6 +576,7 @@ void *supermarketManagement (void *arg) {
 								#endif
 								
 								casseCode[i].open=1;
+								pthread_cond_signal(&casseCode[i].openCond);
 								opencasse++;
 								pthread_mutex_unlock(&casseCode[i].openLock);
 								break;
@@ -576,6 +589,24 @@ void *supermarketManagement (void *arg) {
 			notified=0;
 		}
 		pthread_mutex_unlock(&notifLock); 
+	}
+
+	//Se ricevo sigquit chiudo le casse, se ricevo sighup chiudo le casse quando finiscono i clienti
+	if (s_sigquit==1) {
+		for (int i=0; i<conf->K; ++i) {
+			pthread_cond_signal(&casseCode[i].openCond);
+		}
+	} else if (s_sighup==1) {
+		while (1) {
+			pthread_mutex_lock(&inCustLock);
+			if (inCustomers==0) {
+				for (int i=0; i<conf->K; ++i) {
+					pthread_cond_signal(&casseCode[i].openCond);
+				}
+				pthread_mutex_unlock(&inCustLock);
+				break;
+			} else pthread_mutex_unlock(&inCustLock);
+		}	
 	}
 
 	//Thread join
@@ -780,10 +811,10 @@ int main (int argc, char*argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
-#ifdef DEBUG
-	printf("CONFIG: ");
-	printconf(*conf);
-#endif
+	#ifdef DEBUG
+		printf("CONFIG: ");
+		printconf(*conf);
+	#endif
 
 	int err; //Variabile per controllare gli errori in SYSCALL
 
@@ -807,9 +838,9 @@ int main (int argc, char*argv[]) {
 	}
 	fprintf(logfile, "Apre il supermercato\n\n"); fflush(logfile);
 
-#ifdef DEBUG
-	printf("Inizializzazione finita, ora apre il supermercato\n");
-#endif
+	#ifdef DEBUG
+		printf("Inizializzazione finita, ora apre il supermercato\n");
+	#endif
 
 	//Creo il thread direttore
 	pthread_t dir;
@@ -822,9 +853,9 @@ int main (int argc, char*argv[]) {
 		exit(errno);
 	}
 
-#ifdef DEBUG
-	printf("Il supermercato e' chiuso\n");
-#endif
+	#ifdef DEBUG
+		printf("Il supermercato e' chiuso\n");
+	#endif
 
 	//Stampo il numero di clienti totali entrati
 	fprintf(logfile, "\nNum clienti entrati tot = %d\nNum prod comprati = %d\n", totCustomers, totProd); fflush(logfile);
@@ -832,11 +863,14 @@ int main (int argc, char*argv[]) {
 	//Uscita
 	fclose(logfile);
 	free(conf);
-	free(clienti_sm);
 	for (int i=0; i<conf->K; ++i) {
 		deleteCoda(casseCode[i].codaClienti);
+		pthread_mutex_destroy(&casseCode[i].openLock);
+		pthread_mutex_destroy(&casseCode[i].servitoLock);
+		pthread_cond_destroy(&casseCode[i].servitoCond);
 	}
 	free(casseCode);
 	free(sizeCode);
+
 	return 0;
 }
