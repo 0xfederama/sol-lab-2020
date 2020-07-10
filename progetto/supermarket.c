@@ -72,7 +72,9 @@ void *notify (void *arg) {
 	for (int i=0; i<conf->K; ++i) {
 		sizeCode[i]=0;
 	}
-	struct timespec sleeptime = { 0, conf->T*1000000 }; //Dorme per T secondi per aspettare che i clienti si siano messi in coda
+
+	//Dorme per T secondi per aspettare che i clienti si siano messi in coda
+	struct timespec sleeptime = { 0, conf->T*1000000 }; 
 	nanosleep(&sleeptime, NULL);
 
 	while (s_sigquit==0) {
@@ -146,6 +148,10 @@ void *checkouts (void *arg) {
 		int cont=0;
 		pthread_mutex_lock(&casseCode[id].openLock);
 		while (casseCode[id].open==0 && s_sighup==0 && s_sigquit==0) {
+			//Calcolo tempo1
+			struct timespec t1={0,0};
+			clock_gettime(CLOCK_REALTIME, &t1);
+
 			if (openbefore==1) {
 				nclose++;
 				openbefore=0;
@@ -154,10 +160,7 @@ void *checkouts (void *arg) {
 					casseCode[id].codaClienti=initCoda();
 				}
 			}
-			//Calcolo tempo1
-			struct timespec t1={0,0};
-			clock_gettime(CLOCK_REALTIME, &t1);
-			//Aspetto che venga segnalata apertura
+
 			pthread_cond_wait(&casseCode[id].openCond, &casseCode[id].openLock);
 			//Calcolo tempo2, trovo differenza e sommo al tempo di chiusura
 			struct timespec t2={0,0};
@@ -681,6 +684,11 @@ void *customerManagement (void *arg) {
 
 	while (s_sigquit==0 && s_sighup==0) {
 
+		//Togli il permesso di uscita, serve dal secondo ciclo
+		pthread_mutex_lock(&exitOKLock);
+		exitOK=0;
+		pthread_mutex_unlock(&exitOKLock);
+		
 		//Controllo i clienti, se sono C-E ne vanno fatti entrare altri E
 		pthread_mutex_lock(&outCustLock);
 		if (outCustomers >= conf->E) {
@@ -724,6 +732,12 @@ void *customerManagement (void *arg) {
 		}
 		pthread_mutex_unlock(&exitCustLock);
 	}
+
+	//Se ci sono ancora clienti che aspettano il permesso di uscire, dai il permesso
+	pthread_mutex_lock(&exitOKLock);
+	exitOK=1;
+	pthread_cond_broadcast(&exitOKCond);
+	pthread_mutex_unlock(&exitOKLock);
 
 	#ifdef DEBUG
 		printf("Thread custManage sta per aspettare gli altri thread customer\n");
@@ -862,15 +876,16 @@ int main (int argc, char*argv[]) {
 
 	//Uscita
 	fclose(logfile);
-	free(conf);
 	for (int i=0; i<conf->K; ++i) {
 		deleteCoda(casseCode[i].codaClienti);
 		pthread_mutex_destroy(&casseCode[i].openLock);
+		pthread_cond_destroy(&casseCode[i].openCond);
 		pthread_mutex_destroy(&casseCode[i].servitoLock);
 		pthread_cond_destroy(&casseCode[i].servitoCond);
 	}
 	free(casseCode);
 	free(sizeCode);
+	free(conf);
 
 	return 0;
 }
