@@ -348,7 +348,7 @@ void *customers (void *arg) {
 
 		//Cerca la cassa finche' quella trovata non e' aperta
 		while (1) {
-			int seed=id+rand();	//+time(NULL); //FIXME: con time(NULL) (e anche senza) avevo sempre lo stesso numero
+			int seed=id+rand();
 			numcassa = rand_r(&seed) % conf->K;
 			pthread_mutex_lock(&casseCode[numcassa].openLock);
 			if (casseCode[numcassa].open==0) {
