@@ -406,11 +406,11 @@ void *customers (void *arg) {
 				}
 			}
 			pthread_mutex_unlock(&casseCode[numcassa].servitoLock);
+
+			//Adesso il cliente o e' stato servito e esce, o il supermercato e' in sigquit e deve uscire o la cassa e' chiusa e deve cambiare coda
 			free(cl->servito);
 			free(cl);
-			if (findnewline==0 || segnale==1) {
-				break;
-			}
+			if (findnewline==0 || segnale==1) break;
 		} else {
 			free(cl->servito);
 			free(cl);

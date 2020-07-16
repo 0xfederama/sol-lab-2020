@@ -3,12 +3,12 @@ CFLAGS = -lpthread
 
 DBGFLAG = -DDEBUG
 
-.PHONY: all test2 clean
+.PHONY: all compile test2 clean
 
-all: supermarket
+all: compile
 
 #Compilo la libreria, la linko al file supermarket.c e compilo l'eseguibile
-supermarket:
+compile:
 	@echo "Compiling library and source code"
 	$(CC) mylib.c -c -o mylib.o
 	ar rvs libsm.a mylib.o
